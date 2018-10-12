@@ -2,7 +2,7 @@
 This script is for restarting your Speedport Hybrid Router.        
 The device needs to be in the local network.
 
-This fork is for python 3 and improves the code quality by getting rid of globals.
+This fork is for python 3 and has a more OOP style interface as well as a dedicated config file.
 
     
 ## Install Instruction         
