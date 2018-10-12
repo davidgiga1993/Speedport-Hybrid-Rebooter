@@ -8,7 +8,7 @@ This fork is for python 3 and has a more OOP style interface as well as a dedica
 ## Install Instruction         
  - Install requirements:
  	- Python (>=3)
- 	- Cryptodome
+ 	- Cryptodome (pip install pycryptodomex)
  	
 ## Available commands
 - login: Tries to login to the web UI. This is a test for validating your config
