@@ -135,7 +135,8 @@ class SpeedportApi:
                       binascii.unhexlify(self._login_challenge[16:32].encode('utf-8')),
                       mac_len=8)
         aes.update(binascii.unhexlify(self._login_challenge[32:48].encode('utf-8')))
-        encrypted = aes.encrypt_and_digest("reboot_device=true&csrf_token=" + urllib.parse.quote_plus(csrf_token))
+        encrypted = aes.encrypt_and_digest(("reboot_device=true&csrf_token=" + urllib.parse.quote_plus(csrf_token))
+                                           .encode('utf-8'))
 
         # Get reboot token
         token = binascii.hexlify(encrypted[0] + encrypted[1])
@@ -244,15 +245,17 @@ def main():
         api.login()
 
         # Then reboot
-        print("Start Rebooting...")
+        print("Start rebooting...")
         api.reboot()
+        # Wait a bit to make sure the device is shutdown
+        time.sleep(30)
 
         # Then wait until rebooted
-        print("Wait until rebooting finished...")
+        print("Waiting for device to boot...")
         api.wait_for_reboot()
 
         # Finished
-        print("Rebootet Speedport successfully!")
+        print("Rebooted device successfully!")
         return 0
 
 
