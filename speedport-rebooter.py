@@ -1,217 +1,263 @@
-## Speedport Hybrid Rebooter
-## 
-## This will restart your Speedport Hybrid.
-## With this you can for example restart your Speedport in a specific time interval (Crontab on Linux)
-## Your device have to be in the local network and have to be access to the configurator!
-##
-## INSTALL INSTRUCTION         
-##
-## Linux (Type commands in terminal):
-##     - Install requirements:
-##         - Install Python (2.7):  sudo apt-get install build-essential python
-##         - Download PyCrypto:     wget https://github.com/dlitz/pycrypto/archive/v2.7a1.zip
-##         - Unzip PyCrypto:        unzip v2.7a1.zip && cd pycrypto-2.7a1
-##         - Install PyCrypto:      sudo python setup.py install
-##     - Set Config below!
-##     - This will restart your Speedport Hybrid: python speedport-rebooter.py
-##
-## Windows:
-##     - Install requirements:
-##         - Install Python (2.7):  https://www.python.org/downloads/
-##         - Download PyCrypto:     https://github.com/dlitz/pycrypto/archive/v2.7a1.zip
-##         - Unzip PyCrypto and go into folder
-##         - Install PyCrypto:  python setup.py install
-##         - You may need a compiler environment like Visual Studio!
-##     - Set Config below!
-##     - This will restart your Speedport Hybrid: python speedport-rebooter.py
+import argparse
+import binascii
+import json
+import os
+import re
+import socket
+import sys
+import time
+import urllib.parse
 
-## CONFIG
-
-device_password  =  "password"                # The device password for login
-speedport_url    =  "http://speedport.ip/"    # The URL to the Speedport Hybrid Configurator
-
-##
-## DO NOT CHANGE ANYTHING BELOW THIS LINE
-##
-
+import requests
+import requests.cookies
+from Crypto.Cipher import AES
 from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import PBKDF2
-from Crypto.Cipher import AES
-import time
-import sys
-import socket
-import json
-import binascii
-import urllib
-import urllib2
-import cookielib
 
-login_json = "data/Login.json"
-reboot_json = "data/Reboot.json"
-problem_handling = "html/content/config/problem_handling.html"
-challenge_val = ""
-derivedk = ""
 
-http_header = {"Content-type": "application/x-www-form-urlencoded", "charset": "UTF-8"}
-cookies = cookielib.CookieJar()
-opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cookies))
-socket.setdefaulttimeout(7)
+class SpeedportApi:
+    login_json = ""
+    reboot_json = "data/Reboot.json"
+    problem_handling = "html/content/config/problem_handling.html"
 
-# URL has to end with slash
-if not speedport_url.endswith("/"):
-	speedport_url += "/"
+    def __init__(self, url: str, password: str):
 
-# Gets the challenge_val token from login page
-def get_challenge_val():
-	global challenge_val
-	
-	json_string = open_site(speedport_url + login_json, {"csrf_token": "nulltoken", "showpw": 0, "challengev": "null"})
-	json_object = string_to_json(json_string)
-	
-	# Check valid response
-	for x in json_object:
-		if x["vartype"] == "status":
-			if x["varid"] == "status":
-				if x["varvalue"] != "ok":
-					sys.exit("Couldn't retrieve challengev at %s successfully" % (speedport_url + login_json))
-		if x["vartype"] == "value":
-			if x["varid"] == "challengev":
-				challenge_val = x["varvalue"]
+        if not url.endswith('/'):
+            url += '/'
+        self._url = url
+        self._password = password
 
-# Login with devices password
-def login():
-	global derivedk
-	
-	# Hash password with challenge_val
-	sha256_full = SHA256.new()
-	sha256_full.update("%s:%s" % (challenge_val, device_password))
-	encrypted_password = sha256_full.hexdigest()
-	
-	# Hash only password
-	sha256_passwort = SHA256.new()
-	sha256_passwort.update(device_password)
-	sha256_loginpwd = sha256_passwort.hexdigest()
-	
-	# Get hashed derivedk
-	derivedk = binascii.hexlify(PBKDF2(sha256_loginpwd, challenge_val[:16], 16, 1000))
-	
-	# Finally login
-	json_string = open_site(speedport_url + login_json, {"csrf_token": "nulltoken", "showpw": 0, "password": encrypted_password})
-	json_object = string_to_json(json_string)
-	
-	# Check valid response
-	for x in json_object:
-		if x["vartype"] == "status":
-			if x["varid"] == "login":
-				if x["varvalue"] != "success":
-					sys.exit("Failed to login at URL %s" % (speedport_url + login_json))
-			if x["varid"] == "status":
-				if x["varvalue"] != "ok":
-					sys.exit("Couldn't login at URL %s successfully" % (speedport_url + login_json))
-	
-	# Set needed cookies
-	set_cookie("challengev", challenge_val)
-	set_cookie("derivedk", derivedk)
+        self._cookies = requests.cookies.RequestsCookieJar()
 
-# Reboots the Speedport
-def reboot():
-	csrf_token = get_reboot_csrf()
-	
-	# Check if valid crsf token found
-	if csrf_token == "nulltoken":
-		sys.exit("You don't seem to be logged in. Please try again")
-	
-	# Hash reboot command
-	aes = AES.new(binascii.unhexlify(derivedk), AES.MODE_CCM, binascii.unhexlify(challenge_val[16:32]), mac_len=8)
-	aes.update(binascii.unhexlify(challenge_val[32:48]))
-	encrypted = aes.encrypt_and_digest("reboot_device=true&csrf_token=%s" % urllib.quote_plus(csrf_token))
-	
-	# Get reboot token
-	token = binascii.hexlify(encrypted[0] + encrypted[1])
-	
-	# Reboot Speedport with token
-	json_string = open_site(speedport_url + reboot_json, token)
-	json_object = string_to_json(json_string)
-	
-	# Check valid response
-	for x in json_object:
-		if x["vartype"] == "status":
-			if x["varid"] == "status":
-				if x["varvalue"] != "ok":
-					sys.exit("Couldn't reboot at %s successfully" % (speedport_url + reboot_json))
+        self._login_challenge = None
+        """
+        Challenge for the login
+        
+        :type login_challenge: bytes
+        """
 
-# Waits until Speedport is available again
-def wait_rebooting():
-	start = time.time()
-	
-	while True:
-		try:
-			open_site(speedport_url + reboot_json, None)
-			break
-		except:
-			# Only try for 4 minutes
-			if time.time() - start > 240:
-				sys.exit("Speedport still not rebooted after 4 minutes")
+        self._derive_dk = ''
 
-# Gets the crsf token from problem handling page
-def get_reboot_csrf():
-	html = open_site(speedport_url + problem_handling, None)
-	start = html.find("csrf_token")
-	
-	# Found a crsf token?
-	if start == -1:
-		sys.exit("Couldn't find csrf_token at URL %s" % (speedport_url + problem_handling))
-	
-	# Get raw token
-	end = html.find(";", start)
-	return html[(start + len("csrf_token =  \"") - 1) : (end - 1)]
+        socket.setdefaulttimeout(7)
 
-# Opens a specific site
-def open_site(url, params):
-	# Params only for post requests and dicts
-	if params != None and type(params) is dict:
-			params = urllib.urlencode(params)
-	
-	# Open URL
-	req = urllib2.Request(url, params, http_header)
-	res = opener.open(req)
-	
-	# Return result
-	return res.read()
+    def _get_challenge_val(self):
+        """
+        Reads the challenge for the login step
+        """
+        challenge = None
+        csrf_token = None
+        html = self._open_site('html/login/index.html?lang=de')
+        for line in html.splitlines():
+            match = re.match(r'\s*var\s+csrf_token\s*=\s*(.+?);\s*', line)
+            if match is not None:
+                csrf_token = match.group(1).strip('"').strip("'")
+            match = re.match(r'\s*var\s+challenge\s*=\s*(.+?);\s*', line)
+            if match is not None:
+                challenge = match.group(1).strip('"').strip("'")
 
-# Converts a string to a json object
-def string_to_json(string):
-	# Replace special tokens
-	string = string.strip().replace("\n", "").replace("\t", "")
-	
-	# Some strings are invalid JSON object (Additional comma at the end...)
-	if string[-2] == ",":
-		string_list = list(string)
-		string_list[-2] = ""
-		
-		return json.loads("".join(string_list))
-	
-	return json.loads(string)
+        if challenge is None:
+            raise Exception('Could not fetch challenge')
+        if csrf_token is None:
+            raise Exception('Could not fetch csrf_token')
 
-# Sets new cookies
-def set_cookie(name, value):
-	cookie = cookielib.Cookie(version=0, name=name, value=value, port=None, port_specified=False, domain=speedport_url.replace("http://", "").replace("/", ""), domain_specified=False, domain_initial_dot=False, path="/", path_specified=True, secure=False, expires=None, discard=True, comment=None, comment_url=None, rest={"HttpOnly": None}, rfc2109=False)
-	cookies.set_cookie(cookie)
+        self._login_challenge = challenge
+        self.set_cookie("challengev", challenge)
 
-# At first get challenge_val
-get_challenge_val()
+    def login(self):
+        """
+        Executes a login into the web UI
+        """
+        self._get_challenge_val()
+        # Hash password with challenge_val
+        sha256_full = SHA256.new()
+        sha256_full.update((self._login_challenge + ':' + self._password).encode('utf-8'))
+        encrypted_password = sha256_full.hexdigest()
 
-# Then login
-print ("Logging in...")
-login()
+        # Hash only password
+        sha256_passwort = SHA256.new()
+        sha256_passwort.update(self._password.encode('utf-8'))
+        sha256_loginpwd = sha256_passwort.hexdigest()
 
-# Then reboot
-print ("Start Rebooting...")
-reboot()
+        # Get hashed derivedk
+        self._derive_dk = binascii.hexlify(PBKDF2(sha256_loginpwd, self._login_challenge[:16], 16, 1000))
 
-# Then wait until rebooted
-print ("Wait until rebooting finished...")
-wait_rebooting()
+        # Finally login
+        json_string = self._open_site('data/Login.json',
+                                      {"csrf_token": "nulltoken",
+                                       "showpw": 0,
+                                       "password": encrypted_password,
+                                       'challengev': self._login_challenge})
+        json_object = self.string_to_json(json_string)
 
-# Finished
-print ("Rebootet Speedport successfully!")
+        # Check valid response
+        for x in json_object:
+            if x["vartype"] == "status":
+                if x["varid"] == "login" and x["varvalue"] != "success":
+                    raise Exception("Failed to login at URL {}".format(self._url + SpeedportApi.login_json))
+
+                if x["varid"] == "status" and x["varvalue"] != "ok":
+                    raise Exception("Couldn't login at URL {} successfully".format(self._url + SpeedportApi.login_json))
+
+        # Set needed cookies
+        self.set_cookie("derivedk", self._derive_dk.decode('utf-8'))
+
+    def reboot(self):
+        """
+        Reboots the speedport
+        :return:
+        """
+        csrf_token = self._get_reboot_csrf()
+
+        # Check if valid crsf token found
+        if csrf_token == "nulltoken":
+            raise Exception("You don't seem to be logged in. Please try again")
+
+        # Hash reboot command
+        aes = AES.new(binascii.unhexlify(self._derive_dk), AES.MODE_CCM,
+                      binascii.unhexlify(self._login_challenge[16:32]),
+                      mac_len=8)
+        aes.update(binascii.unhexlify(self._login_challenge[32:48]))
+        encrypted = aes.encrypt_and_digest("reboot_device=true&csrf_token={}"
+                                           .format(urllib.parse.quote_plus(csrf_token)))
+
+        # Get reboot token
+        token = binascii.hexlify(encrypted[0] + encrypted[1])
+
+        # Reboot Speedport with token
+        json_string = self._open_site(SpeedportApi.reboot_json, token)
+        json_object = self.string_to_json(json_string)
+
+        # Check valid response
+        for x in json_object:
+            if x["vartype"] == "status" and x["varid"] == "status" and x["varvalue"] != "ok":
+                raise Exception("Couldn't reboot at {} successfully".format(SpeedportApi.reboot_json))
+
+    def _get_reboot_csrf(self):
+        """
+        Gets the CSRF token for the problem handling page
+
+        :return: CSRF token
+        :rtype: str
+        """
+        csrf_token = None
+        html = self._open_site('html/content/config/problem_handling.html?lang=de', None)
+        for line in html.splitlines():
+            match = re.match(r'\s*var\s+csrf_token\s*=\s*(.+?);\s*', line)
+            if match is not None:
+                csrf_token = match.group(1).strip('"').strip("'")
+
+        # Found a crsf token?
+        if csrf_token is None:
+            raise Exception('Could not fetch csrf_token')
+
+        return csrf_token
+
+    def wait_for_reboot(self):
+        """
+        Waits until the speedport responds again
+        """
+        start = time.time()
+
+        while True:
+            try:
+                self._open_site(SpeedportApi.reboot_json, None)
+                break
+            except Exception:
+                # Only try for 4 minutes
+                if time.time() - start > 240:
+                    raise Exception("Speedport still not rebooted after 4 minutes")
+
+    def _open_site(self, url, params=None):
+        """
+        Opens the given url
+
+        :param url: Relative url
+        :param params: Post parameters
+        :return: Body
+        """
+        url = self._url + url
+
+        header = {"Content-type": "application/x-www-form-urlencoded", "charset": "UTF-8"}
+        print('Requesting ' + url)
+        if params is not None:
+            print('With payload: ' + str(params))
+            reply = requests.post(url, data=params, headers=header, cookies=self._cookies, timeout=10)
+        else:
+            reply = requests.get(url, headers=header, cookies=self._cookies, timeout=10)
+
+        print('Cookie response')
+        for cookie in self._cookies:
+            print(cookie.name + ' -> ' + cookie.value)
+        return reply.text
+
+    @staticmethod
+    def string_to_json(string):
+        """
+        Converts a strong to json
+
+        :param string: String
+        :return: Json dict
+        :rtype: dict
+        """
+        # Replace special tokens
+        string = string.strip().replace("\n", "").replace("\t", "")
+
+        # Some strings are invalid JSON object (Additional comma at the end...)
+        if string[-2] == ",":
+            string_list = list(string)
+            string_list[-2] = ""
+
+            return json.loads("".join(string_list))
+
+        return json.loads(string)
+
+    def set_cookie(self, name, value):
+        """
+        Sets a cookie
+
+        :param name: Name
+        :param value: Value
+        """
+        self._cookies.set(name, value)
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Reboots a speedport hybrid router')
+    parser.add_argument('mode', choices=['login', 'reboot'],
+                        help='The action that should be executed (a login test or reboot)')
+    parser.add_argument('-c', '--config', dest='config', help='Path to the config.json file',
+                        default='config.json')
+
+    args = parser.parse_args()
+    config_path = args.config
+    if not os.path.isfile(config_path):
+        raise FileNotFoundError('Config not found: ' + config_path)
+
+    with open(config_path) as file:
+        config = json.loads(file.read())
+
+    api = SpeedportApi(config['speedport_url'], config['device_password'])
+    if args.mode == 'login':
+        print("Testing login...")
+        api.login()
+        print('Success!')
+        return 0
+    if args.mode == 'reboot':
+        print("Logging in...")
+        api.login()
+
+        # Then reboot
+        print("Start Rebooting...")
+        api.reboot()
+
+        # Then wait until rebooted
+        print("Wait until rebooting finished...")
+        api.wait_for_reboot()
+
+        # Finished
+        print("Rebootet Speedport successfully!")
+        return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
